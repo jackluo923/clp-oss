@@ -299,9 +299,9 @@ You can control where any CLP component is scheduled using standard Kubernetes s
 the same scheduling config under the top-level `scheduling` key.
 
 :::{note}
-When using Presto as the query engine, use `scheduling.prestoWorker` instead of
-`scheduling.queryWorker` and `scheduling.reducer` to configure Presto worker scheduling. Presto
-coordinator scheduling can be configured via `scheduling.prestoCoordinator`.
+Presto runs as a subchart, so its scheduling is configured with the subchart's own keys rather than
+under the top-level `scheduling` key: use `clp-presto.worker` for Presto workers (including
+`replicas`) and `clp-presto.coordinator` for the coordinator.
 :::
 
 #### Dedicated node pools
@@ -347,12 +347,6 @@ To run compression workers, query workers, and reducers in separate node pools:
        nodeSelector:
          yscope.io/nodeType: "query"
 
-     # Optional: if using Presto as the query engine
-     prestoWorker:
-       replicas: 2
-       nodeSelector:
-         yscope.io/nodeType: "presto"
-
      # Optional: to isolate bundled data services
      database:
        nodeSelector:
@@ -366,6 +360,13 @@ To run compression workers, query workers, and reducers in separate node pools:
      resultsCache:
        nodeSelector:
          yscope.io/nodeType: "db"
+
+   # Optional: if using Presto as the query engine
+   clp-presto:
+     worker:
+       replicas: 2
+       nodeSelector:
+         yscope.io/nodeType: "presto"
    ```
 
 3. Install:
@@ -414,7 +415,9 @@ To run all worker types in the same node pool:
        nodeSelector:
          yscope.io/nodeType: "compute"
 
-     prestoWorker:
+   # Optional: if using Presto as the query engine
+   clp-presto:
+     worker:
        replicas: 2
        nodeSelector:
          yscope.io/nodeType: "compute"
@@ -454,11 +457,17 @@ Then install with the values file:
 helm install clp clp/clp DOCS_VAR_HELM_VERSION_FLAG -f resources.yaml
 ```
 
+:::{note}
+Like scheduling, Presto's resources are set through the `clp-presto` subchart rather than the
+top-level `resources` key: use `clp-presto.coordinator.resources` and
+`clp-presto.worker.resources`. The coordinator's heap is `clp-presto.coordinator.heapSize`, which
+must stay below its memory limit.
+:::
+
 ### Service exposure
 
-The Web UI, API server, log ingestor, MCP server, and bundled Presto coordinator each have a
-`serviceType`, defaulting to `ClusterIP` for cloud and multi-tenant clusters behind a
-platform-managed ingress layer.
+The Web UI, API server, log ingestor, and MCP server each have a `serviceType`, defaulting to
+`ClusterIP` for cloud and multi-tenant clusters behind a platform-managed ingress layer.
 
 For local or simple clusters without an ingress layer, set `serviceType` to `NodePort` on each
 Service that should be reachable through a node address; `port` then specifies its `nodePort`:
@@ -476,9 +485,11 @@ clpConfig:
     port: 30301
 ```
 
-The same keys are available under `log_ingestor`, `mcp_server`, and `presto` (for bundled Presto,
-`port` is the coordinator's `nodePort` in `NodePort` mode; otherwise it's the external endpoint
-port). NodePorts must be unique across deployments sharing nodes.
+The same keys are available under `log_ingestor` and `mcp_server`. The bundled Presto coordinator's
+Service is configured by its subchart instead: set `clp-presto.coordinator.service.type` to
+`NodePort` and `clp-presto.coordinator.service.nodePort` to expose it. When using an external Presto
+instance, `clpConfig.presto.port` is the external endpoint's port. NodePorts must be unique across
+deployments sharing nodes.
 
 ```bash
 helm install clp clp/clp DOCS_VAR_HELM_VERSION_FLAG -f nodeport.yaml

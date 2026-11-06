@@ -282,7 +282,7 @@ data:
     {{- else }}
     mcp_server: null
     {{- end }}
-    {{- if .Values.clpConfig.presto }}
+    {{- if or (index .Values "clp-presto" "enabled") .Values.clpConfig.presto }}
     presto:
       host: "{{ include "clp.prestoHost" . }}"
       port: {{ include "clp.prestoPort" . | int }}
@@ -407,7 +407,7 @@ data:
         "ArchiveOutputTargetSegmentSize":
           {{ .Values.clpConfig.archive_output.target_segment_size | int }},
 
-        {{- if .Values.clpConfig.presto }}
+        {{- if or (index .Values "clp-presto" "enabled") .Values.clpConfig.presto }}
         "PrestoHost": "{{ include "clp.prestoHost" . }}",
         "PrestoPort": {{ include "clp.prestoPort" . | int }}
         {{- else }}
@@ -416,84 +416,6 @@ data:
         {{- end }}
       }
     }
-
-{{- if and .Values.clpConfig.presto (has "presto" .Values.clpConfig.bundled) }}
-{{- with .Values.clpConfig.presto }}
-  {{- /* The CLP catalogs may contain credentials, so `presto-catalog-secret.yaml` renders them. */}}
-  presto-coordinator-config-config.properties: |
-    coordinator=true
-    node-scheduler.include-coordinator=false
-    http-server.http.port=8889
-    query.max-memory={{ .coordinator.query_max_memory_gb }}GB
-    query.max-memory-per-node={{ .coordinator.query_max_memory_per_node_gb }}GB
-    discovery-server.enabled=true
-    discovery.uri=http://{{ include "clp.fullname" $ }}-presto-coordinator:8889
-    optimizer.optimize-hash-generation=false
-    regex-library=RE2J
-    use-alternative-function-signatures=true
-    inline-sql-functions=false
-    nested-data-serialization-enabled=false
-    native-execution-enabled=true
-    use-connector-provided-serialization-codecs=true
-
-  presto-coordinator-config-jvm.config: |
-    -server
-    -Xmx4G
-    -XX:+UseG1GC
-    -XX:G1HeapRegionSize=32M
-    -XX:+UseGCOverheadLimit
-    -XX:+ExplicitGCInvokesConcurrent
-    -XX:+HeapDumpOnOutOfMemoryError
-    -XX:+ExitOnOutOfMemoryError
-    -Djdk.attach.allowAttachSelf=true
-
-  presto-coordinator-config-log.properties: |
-    com.facebook.presto={{ .coordinator.logging_level }}
-
-  presto-coordinator-config-node.properties: |
-    node.environment=production
-    node.id=presto-coordinator
-
-  presto-coordinator-config-split-filter.json: |
-    {{ .split_filter | toJson }}
-
-  presto-worker-config-config.properties: |
-    discovery.uri=http://{{ include "clp.fullname" $ }}-presto-coordinator:8889
-    http-server.http.port=8889
-    query-memory-gb={{ .worker.query_memory_gb }}
-    shutdown-onset-sec=1
-    system-memory-gb={{ .worker.system_memory_gb }}
-    register-test-functions=false
-    runtime-metrics-collection-enabled=false
-    plugin.dir=/opt/presto-server/plugin/clp
-
-  presto-worker-config-node.properties: |
-    node.environment=production
-    node.location=worker-location
-
-  presto-worker-config-velox.properties: |
-    mutable-config=true
-
-  presto-worker-setup-configs.sh: |
-    #!/bin/sh
-    set -e
-
-    CONFIG_TEMPLATE_DIR="/etc/presto-config"
-    PRESTO_CONFIG_DIR="/opt/presto-server/etc"
-
-    cp "${CONFIG_TEMPLATE_DIR}/presto-worker-config-config.properties" "${PRESTO_CONFIG_DIR}/config.properties"
-    cp "${CONFIG_TEMPLATE_DIR}/presto-worker-config-node.properties" "${PRESTO_CONFIG_DIR}/node.properties"
-
-    # Query coordinator for version and append to config
-    DISCOVERY_URI="http://{{ include "clp.fullname" $ }}-presto-coordinator:8889"
-    PRESTO_VERSION=$(curl -sf "${DISCOVERY_URI}/v1/info" | jq -r '.nodeVersion.version')
-    echo "presto.version=${PRESTO_VERSION}" >> "${PRESTO_CONFIG_DIR}/config.properties"
-
-    # Set node identity from hostname
-    echo "node.internal-address=$(hostname -i)" >> "${PRESTO_CONFIG_DIR}/node.properties"
-    echo "node.id=$(hostname)" >> "${PRESTO_CONFIG_DIR}/node.properties"
-{{- end }}{{/* with .Values.clpConfig.presto */}}
-{{- end }}{{/* if has "presto" .Values.clpConfig.bundled */}}
 
 {{- if and
   (not .Values.clpConfig.telemetry.disable)

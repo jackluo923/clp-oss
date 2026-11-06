@@ -7,15 +7,10 @@ allowHostAccessForSbinScripts: true
 
 # Each image accepts `tag`, `digest`, or both. When both are set, the digest selects the image and
 # the tag is only a human-readable label.
+#
+# Presto and the CLP connector are deployed by the `clp-presto` subchart; their images are set under
+# `clp-presto.image` below.
 image:
-  # Installs the CLP connector plugin into the Presto coordinator and worker pods.
-  # NOTE: Archives on S3 with `aws_authentication.type: "default"` require a connector that supports
-  # the "default" S3 auth provider.
-  clpConnector:
-    repository: "ghcr.io/y-scope/clp-plugin-presto-connector"
-    pullPolicy: "IfNotPresent"
-    tag: "0.1.0-SNAPSHOT"
-    digest: "sha256:1155f8f9694b0b43cfee252d6ae301ee36e4cdb91b906d1a1f045a7df37d0eb3"
   clpPackage:
     repository: "ghcr.io/y-scope/clp/clp-package"
     pullPolicy: "Always"
@@ -41,17 +36,6 @@ image:
       ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib
     pullPolicy: "IfNotPresent"
     tag: "0.152.0"
-  # The coordinator and worker must run the same Presto version, which the connector must support.
-  prestoCoordinator:
-    repository: "ghcr.io/y-scope/presto"
-    pullPolicy: "IfNotPresent"
-    tag: "0.299"
-    digest: "sha256:87e9ce10a1184f1b5ce0dd74591ef753c3afe763d860ef412a331684ec653753"
-  prestoWorker:
-    repository: "ghcr.io/y-scope/presto-native"
-    pullPolicy: "IfNotPresent"
-    tag: "0.299"
-    digest: "sha256:8f9ca4ba7dd844385b85e7e3bd9568128096e2a7ad09432c6a982ea11279a13b"
   queue:
     repository: "rabbitmq"
     pullPolicy: "Always"
@@ -64,6 +48,64 @@ image:
     repository: "mongo"
     pullPolicy: "Always"
     tag: "9.0.4"
+
+# Values for the `clp-presto` subchart, which deploys Presto with the CLP connector.
+# The values marked below are rendered with `tpl` by the subchart, so they can reference this
+# release. Images, resources, and scheduling for Presto live here.
+clp-presto:
+  enabled: false
+  fullnameOverride: '{{ include "clp.fullname" . }}-presto'
+  serviceAccountName: '{{ include "clp.fullname" . }}-service-account'
+  # The CLP chart renders the catalog Secret, so credentials stay out of a ConfigMap.
+  catalogs:
+    existingSecret: '{{ include "clp.fullname" . }}-presto-catalog'
+  # Must match `clpConfig.archive_output.storage`; Helm cannot derive subchart values from the
+  # parent's config.
+  archiveStorage:
+    type: "fs"
+    fs:
+      existingClaim: '{{ include "clp.fullname" . }}-shared-data-archives'
+      mountPath: "/var/data/archives"
+  coordinator:
+    # The parent supplies the catalog Secret, whose content the subchart cannot hash into the pod
+    # template, so roll the pod on every upgrade.
+    rollOnUpgrade: true
+    # Like this chart's own components, Presto tolerates control-plane taints so that it can be
+    # scheduled on a single-node cluster's only node. Setting `tolerations` replaces this list.
+    tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+    # Wait for the CLP metadata tables before the coordinator starts. The subchart pulls its own
+    # kubectl image (`clp-presto.image.kubectl`), which is separate from this chart's.
+    extraInitContainers:
+      - name: "wait-for-db-table-creator"
+        image: '{{ include "clp-presto.imageRef" (dict "root" . "component" "kubectl") }}'
+        command: ["kubectl", "wait", "--for=condition=complete",
+                  'job/{{ include "clp.fullname" . }}-db-table-creator', "--timeout=300s"]
+  worker:
+    rollOnUpgrade: true
+    # See `coordinator.tolerations`.
+    tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+  # Metadata columns the coordinator prunes splits on, keyed by scope. This default prunes on the
+  # archive time ranges that every clp-s dataset records. See
+  # https://github.com/y-scope/clp-plugin-presto-connector/blob/main/presto-connector/README.md
+  splitMetadataConfig:
+    # The empty scope applies to every table.
+    "":
+      metaColumns:
+        begin_timestamp:
+          type: "bigint"
+          asRangeBoundOf: "timestamp"
+          boundType: "LOWER"
+        end_timestamp:
+          type: "bigint"
+          asRangeBoundOf: "timestamp"
+          boundType: "UPPER"
+      requiredColumns: []
 
 # - If false: Single-node deployment.
 #   - Pods automatically tolerate control-plane taints.
@@ -104,8 +146,6 @@ scheduling:
   reducer:
     replicas: 1
     slotsPerPod: 8
-  prestoWorker:
-    replicas: 1
 
   # Database
   database: {}
@@ -119,7 +159,6 @@ scheduling:
   logIngestor: {}
   queryCoordinator: {}
   queryScheduler: {}
-  prestoCoordinator: {}
   garbageCollector: {}
   apiServer: {}
   webui: {}
@@ -137,7 +176,6 @@ resources:
   compressionWorker: {}
   queryWorker: {}
   reducer: {}
-  prestoWorker: {}
 
   # Database
   database: {}
@@ -151,7 +189,6 @@ resources:
   logIngestor: {}
   queryCoordinator: {}
   queryScheduler: {}
-  prestoCoordinator: {}
   garbageCollector: {}
   apiServer: {}
   webui: {}
@@ -160,9 +197,6 @@ resources:
 
   # Jobs
   dbTableCreator: {}
-  prestoCoordinatorInstallPlugin: {}
-  prestoWorkerInstallPlugin: {}
-  prestoWorkerSetupConfigs: {}
   resultsCacheIndicesCreator: {}
   topologyMetricsEmitter: {}
 
@@ -176,7 +210,6 @@ clpConfig:
     "redis",
     "results_cache",
     "otel_collector",
-    "presto",
   ]
 
   package:
@@ -313,29 +346,18 @@ clpConfig:
   #   port: 30800  # Specifies the service's nodePort. Ignored unless serviceType is "NodePort".
   #   logging_level: "INFO"
 
-  # Presto query engine config. When "presto" is in `bundled`, the chart deploys Presto coordinator
-  # and worker pods. When not in `bundled`, set `host` and `port` to an external Presto instance.
+  # Presto query engine config for the Web UI/API server. Set `clp-presto.enabled` to deploy Presto
+  # with the `clp-presto` subchart; to use an external Presto instance instead, set `host` and
+  # `port`. Presto's images, resources, scheduling, and split metadata config live under
+  # `clp-presto` above.
   #
-  # Bundled Presto workers read archives on S3 using the archive output's `aws_authentication`,
-  # whose type must be "credentials" or "default". With "default", workers get credentials from the
-  # AWS default credential provider chain, e.g., an IAM role for the service account through
+  # Workers read archives on S3 using the archive output's `aws_authentication`, whose type must be
+  # "credentials" or "default". With "default", workers get credentials from the AWS default
+  # credential provider chain, e.g., an IAM role for the service account through
   # `serviceAccount.annotations`.
   presto: null
-  #   serviceType: "ClusterIP"  # "NodePort", "ClusterIP", or "LoadBalancer"
   #   host: "localhost"
-  #   # External endpoint port when Presto isn't bundled; otherwise specifies the coordinator's
-  #   # nodePort when serviceType is "NodePort".
   #   port: 30889
-  #   coordinator:
-  #     logging_level: "INFO"
-  #     query_max_memory_gb: 1
-  #     query_max_memory_per_node_gb: 1
-  #   worker:
-  #     query_memory_gb: 4
-  #     system_memory_gb: 8
-  #   # Split filter config for Presto CLP connector.
-  #   # See https://docs.yscope.com/presto/connector/clp.html#split-filter-config-file
-  #   split_filter: {}
 
   # log-ingestor config. Currently, the config is applicable only if `logs_input.type` is "s3".
   log_ingestor:

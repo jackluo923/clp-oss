@@ -19,8 +19,9 @@ COORDINATOR = f"{RELEASE_NAME}-presto-coordinator"
 WORKER = f"{RELEASE_NAME}-presto-worker"
 CATALOG_SECRET = f"{RELEASE_NAME}-presto-catalog"
 CONFIG_MAP = f"{RELEASE_NAME}-config"
-COORDINATOR_CATALOG = "presto-coordinator-catalog-clp.properties"
-WORKER_CATALOG = "presto-worker-catalog-clp.properties"
+PRESTO_CONFIG_MAP = f"{RELEASE_NAME}-presto-config"
+COORDINATOR_CATALOG = "coordinator-catalog-clp.properties"
+WORKER_CATALOG = "worker-catalog-clp.properties"
 PLUGIN_DIR = "/opt/presto-server/plugin/clp"
 CONNECTOR_REPOSITORY = "ghcr.io/y-scope/clp-plugin-presto-connector"
 
@@ -33,17 +34,15 @@ STATIC_CREDENTIALS = {
 def _presto_values() -> dict[str, Any]:
     """:return: Values that deploy the bundled Presto, with archives on the filesystem."""
     return {
-        "clpConfig": {
-            "webui": {"query_engine": "presto"},
-            "presto": {
-                "coordinator": {
-                    "logging_level": "INFO",
-                    "query_max_memory_gb": 1,
-                    "query_max_memory_per_node_gb": 1,
-                },
-                "worker": {"query_memory_gb": 4, "system_memory_gb": 8},
-                "split_filter": {},
+        "clpConfig": {"webui": {"query_engine": "presto"}},
+        "clp-presto": {
+            "enabled": True,
+            "coordinator": {
+                "loggingLevel": "INFO",
+                "queryMaxMemoryGb": 1,
+                "queryMaxMemoryPerNodeGb": 1,
             },
+            "worker": {"queryMemoryGb": 4, "systemMemoryGb": 8},
         },
     }
 
@@ -68,6 +67,11 @@ def _s3_values(aws_authentication: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+    # The subchart needs the storage type and region, which Helm cannot derive from `clpConfig`.
+    values["clp-presto"]["archiveStorage"] = {
+        "type": "s3",
+        "s3": {"regionCode": "ca-central-1"},
+    }
     return values
 
 
@@ -80,20 +84,11 @@ def _static_auth_values() -> dict[str, Any]:
 
 
 def _config_map_properties(chart: RenderedChart, key: str) -> dict[str, str]:
-    return parse_properties(chart.get("ConfigMap", CONFIG_MAP)["data"][key])
+    return parse_properties(chart.get("ConfigMap", PRESTO_CONFIG_MAP)["data"][key])
 
 
 def _catalog(chart: RenderedChart, key: str) -> dict[str, str]:
     return parse_properties(chart.get("Secret", CATALOG_SECRET)["stringData"][key])
-
-
-def _catalog_checksums(chart: RenderedChart) -> dict[str, str]:
-    return {
-        name: chart.get("Deployment", name)["spec"]["template"]["metadata"]["annotations"][
-            "checksum/presto-catalog"
-        ]
-        for name in [COORDINATOR, WORKER]
-    }
 
 
 @pytest.fixture(scope="module")
@@ -117,8 +112,8 @@ def static_auth_chart() -> RenderedChart:
 @pytest.mark.parametrize(
     ("deployment_name", "container_name", "install_path_env"),
     [
-        (COORDINATOR, "presto-coordinator", "COORDINATOR_PLUGIN_INSTALL_PATH"),
-        (WORKER, "presto-worker", "WORKER_PLUGIN_INSTALL_PATH"),
+        (COORDINATOR, "coordinator", "COORDINATOR_PLUGIN_INSTALL_PATH"),
+        (WORKER, "worker", "WORKER_PLUGIN_INSTALL_PATH"),
     ],
 )
 def test_presto_pods_install_connector(
@@ -157,10 +152,10 @@ def test_presto_loads_connector(presto_chart: RenderedChart) -> None:
     handles.
     """
     coordinator_config = _config_map_properties(
-        presto_chart, "presto-coordinator-config-config.properties"
+        presto_chart, "coordinator-config-config.properties"
     )
     assert "true" == coordinator_config["use-connector-provided-serialization-codecs"]
-    worker_config = _config_map_properties(presto_chart, "presto-worker-config-config.properties")
+    worker_config = _config_map_properties(presto_chart, "worker-config-config.properties")
     assert PLUGIN_DIR == worker_config["plugin.dir"]
 
 
@@ -183,7 +178,7 @@ def test_presto_reads_s3_archives_with_default_auth(default_auth_chart: Rendered
         "eks.amazonaws.com/role-arn"
         in (default_auth_chart.get("ServiceAccount", service_account)["metadata"]["annotations"])
     )
-    worker_env = default_auth_chart.container(WORKER, "presto-worker")["env"]
+    worker_env = default_auth_chart.container(WORKER, "worker")["env"]
     assert {"name": "AWS_REGION", "value": "ca-central-1"} in worker_env
     assert {"name": "AWS_DEFAULT_REGION", "value": "ca-central-1"} in worker_env
 
@@ -201,7 +196,6 @@ def test_presto_reads_s3_archives_with_static_credentials(
         "clp.s3-bucket": "example-bucket",
         "clp.s3-end-point": "https://s3.ca-central-1.amazonaws.com",
     } == _catalog(static_auth_chart, WORKER_CATALOG)
-    assert "env" not in static_auth_chart.container(WORKER, "presto-worker")
 
 
 @pytest.mark.parametrize("auth_type", ["env_vars", "profile"])
@@ -218,19 +212,31 @@ def test_presto_rejects_unsupported_s3_auth(auth_type: str) -> None:
         render_chart(_s3_values(aws_authentication))
 
 
+def test_presto_rejects_mismatched_archive_storage() -> None:
+    """Tests that the subchart's archive storage, which Helm can't derive, must match CLP's."""
+    values = _presto_values()
+    values["clpConfig"]["archive_output"] = {"storage": {"type": "s3"}}
+    error = (
+        'clp-presto.archiveStorage.type is "fs" but clpConfig.archive_output.storage.type is "s3";'
+        " they must match."
+    )
+    with pytest.raises(HelmTemplateError, match=re.escape(error)):
+        render_chart(values)
+
+
 @pytest.mark.parametrize("chart_fixture", ["default_auth_chart", "static_auth_chart"])
 def test_presto_catalogs_are_secret(chart_fixture: str, request: pytest.FixtureRequest) -> None:
     """Tests that the catalogs, which may contain credentials, are only in the catalog Secret."""
     chart: RenderedChart = request.getfixturevalue(chart_fixture)
     assert "pass" == _catalog(chart, COORDINATOR_CATALOG)["clp.metadata-db-password"]
 
-    config_map_data = chart.get("ConfigMap", CONFIG_MAP)["data"]
-    assert {COORDINATOR_CATALOG, WORKER_CATALOG}.isdisjoint(config_map_data)
-    presto_config_map_data = "\n".join(
-        value for key, value in config_map_data.items() if key.startswith("presto-")
-    )
-    assert "clp.metadata-db-password" not in presto_config_map_data
-    assert STATIC_CREDENTIALS["secret_access_key"] not in presto_config_map_data
+    for config_map_name in [CONFIG_MAP, PRESTO_CONFIG_MAP]:
+        config_map_data = chart.get("ConfigMap", config_map_name)["data"]
+        assert {COORDINATOR_CATALOG, WORKER_CATALOG}.isdisjoint(config_map_data)
+
+    presto_config_data = "\n".join(chart.get("ConfigMap", PRESTO_CONFIG_MAP)["data"].values())
+    assert "clp.metadata-db-password" not in presto_config_data
+    assert STATIC_CREDENTIALS["secret_access_key"] not in presto_config_data
 
     for deployment_name, catalog_key in [
         (COORDINATOR, COORDINATOR_CATALOG),
@@ -244,25 +250,41 @@ def test_presto_catalogs_are_secret(chart_fixture: str, request: pytest.FixtureR
         } == catalog_volume["secret"]
 
 
-def test_presto_pods_roll_when_their_catalog_changes(default_auth_chart: RenderedChart) -> None:
-    """Tests that each Presto pod rolls when its own catalog changes, and only then."""
-    baseline = _catalog_checksums(default_auth_chart)
+def test_presto_pods_roll_on_upgrade(presto_chart: RenderedChart) -> None:
+    """
+    Tests that both Presto pods carry the per-upgrade rollout annotation. The catalog comes from a
+    Secret that this chart renders, so the subchart cannot hash it into the pod template; it rolls
+    the pods on every upgrade instead.
+    """
+    for deployment_name in [COORDINATOR, WORKER]:
+        annotations = presto_chart.get("Deployment", deployment_name)["spec"]["template"][
+            "metadata"
+        ]["annotations"]
+        assert "checksum/release-revision" in annotations
+        assert "checksum/presto-catalog" not in annotations
 
-    def changed_pods(values: dict[str, Any]) -> set[str]:
-        checksums = _catalog_checksums(render_chart(values))
-        return {name for name, checksum in checksums.items() if checksum != baseline[name]}
 
-    values = _default_auth_values()
-    values["clpConfig"]["archive_output"]["storage"]["s3_config"]["bucket"] = "other-bucket"
-    assert {WORKER} == changed_pods(values)
+def test_presto_enabled_sets_webui_host(presto_chart: RenderedChart) -> None:
+    """Tests that the Web UI is pointed at the subchart's coordinator service."""
+    config = presto_chart.get("ConfigMap", CONFIG_MAP)["data"]["clp-config.yaml"]
+    assert 'host: "clp-presto-coordinator"' in config
+    assert "port: 8889" in config
 
-    values = _default_auth_values()
-    values["credentials"] = {"database": {"password": "new-pass"}}
-    assert {COORDINATOR} == changed_pods(values)
 
-    values = _default_auth_values()
-    values["clpConfig"]["presto"]["worker"]["system_memory_gb"] = 4
-    assert set() == changed_pods(values)
+def test_presto_disabled_renders_no_presto_workloads() -> None:
+    """Tests that the default values render no Presto workloads."""
+    chart = render_chart({})
+    for kind, name in [
+        ("Deployment", COORDINATOR),
+        ("Deployment", WORKER),
+        ("Service", COORDINATOR),
+        ("ConfigMap", PRESTO_CONFIG_MAP),
+        ("Secret", CATALOG_SECRET),
+    ]:
+        assert chart.find(kind, name) is None, f"{kind} '{name}' was rendered."
+
+    config = chart.get("ConfigMap", CONFIG_MAP)["data"]["clp-config.yaml"]
+    assert "presto: null" in config
 
 
 @pytest.mark.parametrize(
@@ -276,17 +298,17 @@ def test_presto_pods_roll_when_their_catalog_changes(default_auth_chart: Rendere
 def test_image_refs(image: dict[str, Any], expected_ref: str) -> None:
     """Tests that images can be selected by tag, digest, or both."""
     values = _presto_values()
-    values["image"] = {
-        "prestoCoordinator": {"repository": "registry.example/presto", **image},
+    values["clp-presto"]["image"] = {
+        "coordinator": {"repository": "registry.example/presto", **image},
     }
     chart = render_chart(values)
-    assert expected_ref == chart.container(COORDINATOR, "presto-coordinator")["image"]
+    assert expected_ref == chart.container(COORDINATOR, "coordinator")["image"]
 
 
 def test_image_ref_requires_tag_or_digest() -> None:
     """Tests that an image with neither a tag nor a digest fails to render."""
     values = _presto_values()
-    values["image"] = {"clpConnector": {"tag": None, "digest": None}}
-    error = 'image.clpConnector requires "tag", "digest", or both.'
+    values["clp-presto"]["image"] = {"connector": {"tag": None, "digest": None}}
+    error = 'image.connector requires "tag" or "digest"'
     with pytest.raises(HelmTemplateError, match=re.escape(error)):
         render_chart(values)

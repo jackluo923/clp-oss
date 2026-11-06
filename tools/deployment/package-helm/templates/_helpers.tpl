@@ -427,7 +427,7 @@ Gets the host for the Presto service.
 @return {string} The Presto host
 */}}
 {{- define "clp.prestoHost" -}}
-{{- if has "presto" .Values.clpConfig.bundled -}}
+{{- if index .Values "clp-presto" "enabled" -}}
 {{- printf "%s-presto-coordinator" (include "clp.fullname" .) -}}
 {{- else -}}
 {{- .Values.clpConfig.presto.host -}}
@@ -441,7 +441,7 @@ Gets the port for the Presto service.
 @return {string} The Presto port
 */}}
 {{- define "clp.prestoPort" -}}
-{{- if has "presto" .Values.clpConfig.bundled -}}
+{{- if index .Values "clp-presto" "enabled" -}}
 8889
 {{- else -}}
 {{- .Values.clpConfig.presto.port -}}
@@ -460,11 +460,10 @@ clp.metadata-provider-type=mysql
 clp.metadata-db-url=jdbc:mysql://{{ include "clp.databaseHost" . }}:{{ include "clp.databasePort" . }}
 clp.metadata-db-name={{ .Values.clpConfig.database.names.clp }}
 clp.metadata-db-user={{ .Values.credentials.database.username }}
-clp.metadata-db-password={{ .Values.credentials.database.password }}
+clp.metadata-db-password={{ .Values.credentials.database.password | replace "\\" "\\\\" }}
 clp.metadata-table-prefix=clp_
 clp.split-provider-type=mysql
-clp.split-filter-provider-type=mysql
-clp.split-filter-config=/opt/presto-server/etc/split-filter.json
+clp.split-metadata-config-path=/opt/presto-server/etc/split-metadata-config.json
 {{- end }}
 
 {{/*
@@ -488,7 +487,7 @@ clp.s3-auth-provider=default
 {{- else if eq $authType "credentials" }}
 clp.s3-auth-provider=clp_package
 clp.s3-access-key-id={{ $s3Config.aws_authentication.credentials.access_key_id }}
-clp.s3-secret-access-key={{ $s3Config.aws_authentication.credentials.secret_access_key }}
+clp.s3-secret-access-key={{ $s3Config.aws_authentication.credentials.secret_access_key | replace "\\" "\\\\" }}
 {{- else }}
 {{- fail (printf
   "Presto reads S3 archives with the %q or %q aws_authentication type, not %q."

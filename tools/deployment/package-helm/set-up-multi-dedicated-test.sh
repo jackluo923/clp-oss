@@ -140,9 +140,9 @@ helm dependency update "${script_dir}"
 
 # Resolve image overrides before installing, so that a failure to load an image stops the script.
 clp_package_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "image.clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
 clp_connector_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpConnector" "${CLP_CONNECTOR_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "clp-presto.image.connector" "${CLP_CONNECTOR_IMAGE}") || exit 1
 
 # Word splitting is intentional: helper functions return multiple --set flags.
 # shellcheck disable=SC2046,SC2086
@@ -154,8 +154,8 @@ helm install test "${script_dir}" \
     --set "scheduling.queryWorker.nodeSelector.yscope\.io/nodeType=query" \
     --set "scheduling.reducer.replicas=${REDUCER_REPLICAS}" \
     --set "scheduling.reducer.nodeSelector.yscope\.io/nodeType=query" \
-    --set "scheduling.prestoWorker.replicas=${PRESTO_WORKER_REPLICAS}" \
-    --set "scheduling.prestoWorker.nodeSelector.yscope\.io/nodeType=presto" \
+    --set "clp-presto.worker.replicas=${PRESTO_WORKER_REPLICAS}" \
+    --set "clp-presto.worker.nodeSelector.yscope\.io/nodeType=presto" \
     --set "scheduling.database.nodeSelector.yscope\.io/nodeType=db" \
     --set "scheduling.queue.nodeSelector.yscope\.io/nodeType=db" \
     --set "scheduling.redis.nodeSelector.yscope\.io/nodeType=db" \
@@ -163,7 +163,7 @@ helm install test "${script_dir}" \
     --set "scheduling.compressionScheduler.nodeSelector.yscope\.io/nodeType=core" \
     --set "scheduling.logIngestor.nodeSelector.yscope\.io/nodeType=core" \
     --set "scheduling.queryScheduler.nodeSelector.yscope\.io/nodeType=core" \
-    --set "scheduling.prestoCoordinator.nodeSelector.yscope\.io/nodeType=core" \
+    --set "clp-presto.coordinator.nodeSelector.yscope\.io/nodeType=core" \
     --set "scheduling.garbageCollector.nodeSelector.yscope\.io/nodeType=core" \
     --set "scheduling.apiServer.nodeSelector.yscope\.io/nodeType=core" \
     --set "scheduling.webui.nodeSelector.yscope\.io/nodeType=core" \

@@ -18,17 +18,19 @@ been merged into the main Presto repository so that you can use official Presto 
 
 CLP supports Presto through two deployment methods:
 
-* **[Kubernetes (Helm)](#kubernetes-helm)**: Presto is deployed as part of the CLP Helm chart. This
-  is the simplest option if you are already using the [Kubernetes deployment][k8s-deployment].
+* **[Kubernetes (Helm)](#kubernetes-helm)**: Presto is deployed by the `clp-presto` subchart that
+  the CLP Helm chart includes. This is the simplest option if you are already using the
+  [Kubernetes deployment][k8s-deployment].
 * **[Docker Compose](#docker-compose)**: Presto is deployed separately using Docker Compose alongside
   a CLP package installation.
 
 ## Kubernetes (Helm)
 
-When deploying CLP on Kubernetes using Helm, Presto can be enabled by setting `clpConfig.presto` to
-a non-null configuration and `clpConfig.webui.query_engine` to `"presto"`. The `query_engine` setting controls
-which search interface the Web UI displays. Presto runs alongside the existing compression pipeline;
-the clp-s native query components can optionally be disabled to save resources.
+When deploying CLP on Kubernetes using Helm, Presto can be enabled by setting
+`clp-presto.enabled` to `true` and `clpConfig.webui.query_engine` to `"presto"`. The `query_engine`
+setting controls which search interface the Web UI displays. Presto runs alongside the existing
+compression pipeline; the clp-s native query components can optionally be disabled to save
+resources.
 
 ### Requirements
 
@@ -55,27 +57,39 @@ the clp-s native query components can optionally be disabled to save resources.
      results_cache:
        retention_period: null
 
-     presto:
-       port: 30889
-       coordinator:
-         logging_level: "INFO"
-         query_max_memory_gb: 1
-         query_max_memory_per_node_gb: 1
-       worker:
-         query_memory_gb: 4
-         system_memory_gb: 8
-       # Split filter config for the Presto CLP connector. For each dataset, add a filter entry.
-       # Replace <dataset> with the dataset name (use "default" if you didn't specify one when
-       # compressing) and <timestamp-key> with the timestamp key used during compression.
-       # See https://docs.yscope.com/presto/connector/clp.html#split-filter-config-file
-       split_filter:
-         clp.default.<dataset>:
-           - columnName: "<timestamp-key>"
-             customOptions:
-               rangeMapping:
-                 lowerBound: "begin_timestamp"
-                 upperBound: "end_timestamp"
-             required: false
+   clp-presto:
+     enabled: true
+
+     # Must match clpConfig.archive_output.storage. Helm cannot derive subchart values from the
+     # parent's config.
+     archiveStorage:
+       type: "fs"  # "fs" or "s3"
+
+     coordinator:
+       service:
+         type: "NodePort"
+         nodePort: 30889
+       loggingLevel: "INFO"
+       queryMaxMemoryGb: 1
+       queryMaxMemoryPerNodeGb: 1
+     worker:
+       queryMemoryGb: 4
+       systemMemoryGb: 8
+
+     # Metadata columns the coordinator can prune splits on. The empty scope applies to every
+     # table. See "Pruning splits" in the connector's README.
+     splitMetadataConfig:
+       "":
+         metaColumns:
+           begin_timestamp:
+             type: "bigint"
+             asRangeBoundOf: "timestamp"
+             boundType: "LOWER"
+           end_timestamp:
+             type: "bigint"
+             asRangeBoundOf: "timestamp"
+             boundType: "UPPER"
+         requiredColumns: []
    ```
 
 2. Install (or upgrade) the Helm chart with the Presto values:
@@ -87,7 +101,7 @@ the clp-s native query components can optionally be disabled to save resources.
 3. Verify that the Presto coordinator and worker pods are running:
 
    ```bash
-   kubectl get pods -l "app.kubernetes.io/component in (presto-coordinator, presto-worker)"
+   kubectl get pods -l "app.kubernetes.io/name=clp-presto"
    ```
 
 Once the pods are ready, you can [query your logs through Presto](#querying-your-logs-through-presto)
@@ -95,15 +109,17 @@ using CLP's Web UI.
 
 :::{note}
 When using Kubernetes, Presto worker scheduling can be configured using the
-`scheduling.prestoWorker` key in Helm values. Presto coordinator scheduling uses
-`scheduling.prestoCoordinator`. See the [component scheduling][k8s-scheduling] section of the
+`clp-presto.worker` key in Helm values. Presto coordinator scheduling uses
+`clp-presto.coordinator`. See the [component scheduling][k8s-scheduling] section of the
 Kubernetes deployment guide for details.
 :::
 
 ### Archives on S3
 
-When archives are stored on S3 (`clpConfig.archive_output.storage.type: "s3"`), Presto workers read
-them using the archive output's `aws_authentication` setting, whose `type` must be one of:
+When archives are stored on S3 (`clpConfig.archive_output.storage.type: "s3"`), set
+`clp-presto.archiveStorage.type` to `"s3"` and `clp-presto.archiveStorage.s3.regionCode` to the
+bucket's region. Presto workers read the archives using the archive output's `aws_authentication`
+setting, whose `type` must be one of:
 
 * `credentials`: The workers use the configured access key.
 * `default`: The workers get credentials from the AWS default credential provider chain. For
@@ -118,20 +134,15 @@ them using the archive output's `aws_authentication` setting, whose `type` must 
 
   The role needs permission to read the archives (`s3:GetObject`).
 
-:::{note}
-`default` authentication requires a CLP Presto connector that supports it. The chart's default
-connector doesn't yet, so until it does, set `image.clpConnector` to a connector installer image
-that does.
-:::
-
 ### Images
 
-The chart runs Presto coordinator and worker images that don't include CLP's connector, and installs
-the [CLP Presto connector][clp-presto-connector] into them when their pods start. These images are
-set using `image.prestoCoordinator`, `image.prestoWorker`, and `image.clpConnector`. Each accepts a
-`tag`, a `digest`, or both; when both are set, the digest selects the image. The default images are
-multi-architecture (`linux/amd64` and `linux/arm64`). The coordinator and worker must run the same
-Presto version, which the connector must support.
+The `clp-presto` subchart runs Presto coordinator and worker images that don't include CLP's
+connector, and installs the [CLP Presto connector][clp-presto-connector] into them when their pods
+start. These images are set using `clp-presto.image.coordinator`, `clp-presto.image.worker`, and
+`clp-presto.image.connector`. Each accepts a `tag`, a `digest`, or both; when both are set, the
+digest selects the image. The default images are multi-architecture (`linux/amd64` and
+`linux/arm64`). The coordinator and worker must run the same Presto version, which the connector
+must support.
 
 ## Docker Compose
 

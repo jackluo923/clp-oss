@@ -46,9 +46,9 @@ helm dependency update "${script_dir}"
 
 # Resolve image overrides before installing, so that a failure to load an image stops the script.
 clp_package_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "image.clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
 clp_connector_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpConnector" "${CLP_CONNECTOR_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "clp-presto.image.connector" "${CLP_CONNECTOR_IMAGE}") || exit 1
 
 # Word splitting is intentional: helper functions return multiple --set flags.
 # shellcheck disable=SC2046,SC2086
@@ -57,7 +57,7 @@ helm install test "${script_dir}" \
     --set "scheduling.compressionWorker.replicas=${COMPRESSION_WORKER_REPLICAS}" \
     --set "scheduling.queryWorker.replicas=${QUERY_WORKER_REPLICAS}" \
     --set "scheduling.reducer.replicas=${REDUCER_REPLICAS}" \
-    --set "scheduling.prestoWorker.replicas=${PRESTO_WORKER_REPLICAS}" \
+    --set "clp-presto.worker.replicas=${PRESTO_WORKER_REPLICAS}" \
     $(get_service_exposure_helm_args) \
     $(get_presto_helm_args) \
     ${clp_package_image_args} \

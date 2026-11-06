@@ -23,6 +23,17 @@ To test how the CLP package Helm chart renders with different values:
 task tests:integration:helm
 ```
 
+The task fetches the chart's dependencies, including the `clp-presto` chart from
+`oci://ghcr.io/y-scope/charts`, before running the tests. You'll need network access to GHCR; the
+chart is public, so no login is required.
+
+To render the chart by hand (e.g., with `helm template` or `helm lint`), fetch the dependencies
+first:
+
+```shell
+helm dependency update tools/deployment/package-helm
+```
+
 ### Using `pytest` markers
 
 To run more specific sets of tests, you can use `pytest` directly with `pytest` markers.

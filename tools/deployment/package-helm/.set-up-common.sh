@@ -45,12 +45,13 @@ prepare_environment() {
 # flags for using it. If image is not specified, returns empty string.
 #
 # @param {string} cluster_name Name of the kind cluster
-# @param {string} component Flat image component name (e.g., "clpPackage", "redis", "queue")
+# @param {string} image_path Image value path (e.g., "image.clpPackage",
+#   "clp-presto.image.connector")
 # @param {string} [image] Docker image (e.g., "clp-package:dev-junhao-a6bf")
 # @return Prints helm --set flags to stdout
 get_image_helm_args() {
     local cluster_name=$1
-    local component=$2
+    local image_path=$2
     local image="${3:-}"
 
     if [[ -z "${image}" ]]; then
@@ -74,10 +75,10 @@ get_image_helm_args() {
         return 1
     fi
     # Clear any default digest, since it would select the default image instead of the local one.
-    echo "--set" "image.${component}.repository=${repo}" \
-         "--set" "image.${component}.tag=${tag}" \
-         "--set" "image.${component}.digest=null" \
-         "--set" "image.${component}.pullPolicy=Never"
+    echo "--set" "${image_path}.repository=${repo}" \
+         "--set" "${image_path}.tag=${tag}" \
+         "--set" "${image_path}.digest=null" \
+         "--set" "${image_path}.pullPolicy=Never"
 }
 
 # Parses common arguments shared across set-up scripts.
@@ -137,27 +138,33 @@ get_presto_helm_args() {
     fi
 
     echo "--set" "clpConfig.webui.query_engine=presto" \
-         "--set" "clpConfig.presto.serviceType=NodePort" \
-         "--set" "clpConfig.presto.port=30889" \
-         "--set" "clpConfig.presto.coordinator.logging_level=INFO" \
-         "--set" "clpConfig.presto.coordinator.query_max_memory_gb=1" \
-         "--set" "clpConfig.presto.coordinator.query_max_memory_per_node_gb=1" \
-         "--set" "clpConfig.presto.worker.query_memory_gb=4" \
-         "--set" "clpConfig.presto.worker.system_memory_gb=8" \
-         "--set-json" "clpConfig.presto.split_filter=$(tr -d '[:space:]' <<'SPLIT_FILTER'
+         "--set" "clp-presto.enabled=true" \
+         "--set" "clp-presto.coordinator.service.type=NodePort" \
+         "--set" "clp-presto.coordinator.service.nodePort=30889" \
+         "--set" "clp-presto.coordinator.loggingLevel=INFO" \
+         "--set" "clp-presto.coordinator.queryMaxMemoryGb=1" \
+         "--set" "clp-presto.coordinator.queryMaxMemoryPerNodeGb=1" \
+         "--set" "clp-presto.worker.queryMemoryGb=4" \
+         "--set" "clp-presto.worker.systemMemoryGb=8" \
+         "--set-json" "clp-presto.splitMetadataConfig=$(tr -d '[:space:]' <<'SPLIT_METADATA_CONFIG'
 {
-  "clp.default.default": [{
-    "columnName": "timestamp",
-    "customOptions": {
-      "rangeMapping": {
-        "lowerBound": "begin_timestamp",
-        "upperBound": "end_timestamp"
+  "": {
+    "metaColumns": {
+      "begin_timestamp": {
+        "type": "bigint",
+        "asRangeBoundOf": "timestamp",
+        "boundType": "LOWER"
+      },
+      "end_timestamp": {
+        "type": "bigint",
+        "asRangeBoundOf": "timestamp",
+        "boundType": "UPPER"
       }
     },
-    "required": false
-  }]
+    "requiredColumns": []
+  }
 }
-SPLIT_FILTER
+SPLIT_METADATA_CONFIG
 )" \
          "--set" "clpConfig.api_server=null" \
          "--set" "clpConfig.query_scheduler=null" \

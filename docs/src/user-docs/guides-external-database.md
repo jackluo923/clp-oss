@@ -259,7 +259,6 @@ initialization jobs (`db-table-creator` and `results-cache-indices-creator`).
        "redis",
        # "results_cache",
        "otel_collector",
-       "presto",
      ]
    ```
 

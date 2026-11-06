@@ -1,6 +1,9 @@
 dependencies:
+- name: clp-presto
+  repository: oci://ghcr.io/y-scope/charts
+  version: 0.2.0-SNAPSHOT
 - name: spider
   repository: https://github.com/y-scope/spider/raw/gh-pages
   version: 0.2.0-dev.3
-digest: sha256:c3d637244d5f52a99b363753b7b54bb8a5bf74b4a13ae5b29517a79fe2bb7a9a
-generated: "2026-09-24T17:02:17.485462816-04:00"
+digest: sha256:3143907469cf64c0f5604fc9118cada19257405564dd06cc19925ef2e9bd8a9f
+generated: "2026-11-06T06:09:25.179071888-05:00"

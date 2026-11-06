@@ -30,9 +30,9 @@ helm dependency update "${script_dir}"
 
 # Resolve image overrides before installing, so that a failure to load an image stops the script.
 clp_package_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "image.clpPackage" "${CLP_PACKAGE_IMAGE}") || exit 1
 clp_connector_image_args=$(get_image_helm_args \
-    "${CLUSTER_NAME}" "clpConnector" "${CLP_CONNECTOR_IMAGE}") || exit 1
+    "${CLUSTER_NAME}" "clp-presto.image.connector" "${CLP_CONNECTOR_IMAGE}") || exit 1
 
 # Word splitting is intentional: helper functions return multiple --set flags.
 # shellcheck disable=SC2046,SC2086
