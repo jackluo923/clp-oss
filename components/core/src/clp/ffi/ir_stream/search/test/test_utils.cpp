@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cmath>
 #include <concepts>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -34,6 +36,7 @@ using clp::ffi::value_float_t;
 using clp::ffi::value_int_t;
 using clp::ir::eight_byte_encoded_variable_t;
 using clp::ir::four_byte_encoded_variable_t;
+using clp_s::epochtime_t;
 using clp_s::search::ast::ColumnDescriptor;
 using clp_s::search::ast::Expression;
 using clp_s::search::ast::FilterExpr;
@@ -489,5 +492,75 @@ TEST_CASE("ffi_ir_stream_search_filter_evaluation", "[ffi][ir_stream][search]") 
     auto const filter_to_test{std::dynamic_pointer_cast<FilterExpr>(filter_expr)};
     REQUIRE_FALSE((nullptr == filter_to_test));
     REQUIRE(check_filter_evaluation(filter_to_test.get(), filter_operand_literal_type));
+}
+
+TEST_CASE(
+        "ffi_ir_stream_search_timestamp_comparison_normalizes_precision",
+        "[ffi][ir_stream][search]"
+) {
+    constexpr std::string_view cColumnName{"test_column"};
+    auto column_descriptor{
+            ColumnDescriptor::create_from_escaped_tokens({std::string{cColumnName}}, "")
+    };
+    REQUIRE_FALSE((nullptr == column_descriptor));
+
+    constexpr epochtime_t cEpochNanoseconds{1'746'003'005'000'000'000};
+    constexpr epochtime_t cEpochMicroseconds{cEpochNanoseconds / 1000};
+
+    auto ref_timestamp_literal{TimestampLiteral::create(cEpochNanoseconds)};
+    REQUIRE_FALSE((nullptr == ref_timestamp_literal));
+
+    auto filter_expr{
+            FilterExpr::create(column_descriptor, FilterOperation::EQ, ref_timestamp_literal)
+    };
+    auto const filter{std::dynamic_pointer_cast<FilterExpr>(filter_expr)};
+    REQUIRE_FALSE((nullptr == filter));
+
+    for (auto const stored_value : {cEpochMicroseconds, cEpochNanoseconds}) {
+        auto const result{evaluate_filter_against_literal_type_value_pair(
+                filter.get(),
+                LiteralType::IntegerT,
+                Value{value_int_t{stored_value}},
+                true
+        )};
+        REQUIRE(result.has_value());
+        REQUIRE(result.value());
+    }
+
+    // A float leaf holding the same instant in milliseconds is 1746003005125.0, which is below a
+    // bound a second later only when it is converted to nanoseconds first.
+    auto later_literal{TimestampLiteral::create(cEpochNanoseconds + 1'000'000'000)};
+    REQUIRE_FALSE((nullptr == later_literal));
+    auto less_than_expr{FilterExpr::create(column_descriptor, FilterOperation::LT, later_literal)};
+    auto const less_than{std::dynamic_pointer_cast<FilterExpr>(less_than_expr)};
+    REQUIRE_FALSE((nullptr == less_than));
+    auto const float_result{evaluate_filter_against_literal_type_value_pair(
+            less_than.get(),
+            LiteralType::FloatT,
+            Value{value_float_t{1'746'003'005'125.0}},
+            true
+    )};
+    REQUIRE(float_result.has_value());
+    REQUIRE(float_result.value());
+
+    // A float leaf holding epoch seconds is converted the same way.
+    auto const seconds_result{evaluate_filter_against_literal_type_value_pair(
+            filter.get(),
+            LiteralType::FloatT,
+            Value{value_float_t{1'746'003'005.0}},
+            true
+    )};
+    REQUIRE(seconds_result.has_value());
+    REQUIRE(seconds_result.value());
+
+    // A NaN is not a timestamp, so an ordered comparison against it stays false.
+    auto const nan_result{evaluate_filter_against_literal_type_value_pair(
+            less_than.get(),
+            LiteralType::FloatT,
+            Value{value_float_t{std::numeric_limits<double>::quiet_NaN()}},
+            true
+    )};
+    REQUIRE(nan_result.has_value());
+    REQUIRE_FALSE(nan_result.value());
 }
 }  // namespace clp::ffi::ir_stream::search::test

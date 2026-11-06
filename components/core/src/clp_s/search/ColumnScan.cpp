@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -20,12 +21,15 @@
 #include "ast/FilterOperation.hpp"
 #include "ast/Literal.hpp"
 #include "ast/OrExpr.hpp"
+#include "ast/TimestampComparison.hpp"
 
 using clp_s::search::ast::AndExpr;
 using clp_s::search::ast::FilterExpr;
 using clp_s::search::ast::FilterOperation;
 using clp_s::search::ast::LiteralType;
 using clp_s::search::ast::OrExpr;
+using clp_s::search::ast::to_epoch_nanoseconds;
+using clp_s::search::ast::try_get_timestamp_literal_nanoseconds;
 
 namespace clp_s::search {
 namespace {
@@ -68,6 +72,28 @@ template <typename T>
         int32_t column_id,
         FilterOperation operation,
         T operand
+) -> ColumnScan::Bitmap;
+
+/**
+ * Builds a bitmap for a filter over a basic typed column whose values need converting before they
+ * are compared.
+ * @param num_messages Number of messages represented by the bitmap.
+ * @param reader_map Column readers keyed by column ID.
+ * @param column_id ID of the column to scan.
+ * @param operation Filter operation to apply.
+ * @param operand Operand from the filter expression.
+ * @param convert_value Applied to each value read from the column before it is compared.
+ * @return A bitmap indexed by message number, with nonzero entries for matching messages.
+ * @tparam ValueType Type of the values read from the column.
+ */
+template <typename ValueType, typename OperandType, typename ConvertValue>
+[[nodiscard]] auto build_basic_filter(
+        uint64_t num_messages,
+        ColumnScan::BasicReaderMap const& reader_map,
+        int32_t column_id,
+        FilterOperation operation,
+        OperandType operand,
+        ConvertValue convert_value
 ) -> ColumnScan::Bitmap;
 
 /**
@@ -187,6 +213,25 @@ template <typename T>
         FilterOperation operation,
         T operand
 ) -> ColumnScan::Bitmap {
+    return build_basic_filter<T, T, std::identity>(
+            num_messages,
+            reader_map,
+            column_id,
+            operation,
+            operand,
+            std::identity{}
+    );
+}
+
+template <typename ValueType, typename OperandType, typename ConvertValue>
+[[nodiscard]] auto build_basic_filter(
+        uint64_t num_messages,
+        ColumnScan::BasicReaderMap const& reader_map,
+        int32_t column_id,
+        FilterOperation operation,
+        OperandType operand,
+        ConvertValue convert_value
+) -> ColumnScan::Bitmap {
     ColumnScan::Bitmap bitmap(num_messages, 0);
     auto const readers = reader_map.find(column_id);
     if (reader_map.end() == readers) {
@@ -194,7 +239,8 @@ template <typename T>
     }
     for (auto* reader : readers->second) {
         for (uint64_t message_index{0}; message_index < num_messages; ++message_index) {
-            auto const value = std::get<T>(reader->extract_value(message_index));
+            auto const value
+                    = convert_value(std::get<ValueType>(reader->extract_value(message_index)));
             bitmap[message_index] |= compare(operation, value, operand) ? 1 : 0;
         }
     }
@@ -565,6 +611,17 @@ auto ColumnScan::build_filter(
             if (false == operand->as_int(operand_value, operation)) {
                 return bitmap;
             }
+            epochtime_t timestamp_operand{};
+            if (try_get_timestamp_literal_nanoseconds(operand, timestamp_operand)) {
+                return build_basic_filter<int64_t>(
+                        m_num_messages,
+                        basic_readers,
+                        column_id,
+                        operation,
+                        timestamp_operand,
+                        [](int64_t value) { return to_epoch_nanoseconds(value); }
+                );
+            }
             return build_basic_filter(
                     m_num_messages,
                     basic_readers,
@@ -577,6 +634,17 @@ auto ColumnScan::build_filter(
             double operand_value{};
             if (false == operand->as_float(operand_value, operation)) {
                 return bitmap;
+            }
+            epochtime_t timestamp_operand{};
+            if (try_get_timestamp_literal_nanoseconds(operand, timestamp_operand)) {
+                return build_basic_filter<double>(
+                        m_num_messages,
+                        basic_readers,
+                        column_id,
+                        operation,
+                        static_cast<double>(timestamp_operand),
+                        [](double value) { return to_epoch_nanoseconds(value); }
+                );
             }
             return build_basic_filter(
                     m_num_messages,

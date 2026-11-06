@@ -12,6 +12,7 @@
 #include "../../../../clp_s/search/ast/FilterExpr.hpp"
 #include "../../../../clp_s/search/ast/FilterOperation.hpp"
 #include "../../../../clp_s/search/ast/Literal.hpp"
+#include "../../../../clp_s/search/ast/TimestampComparison.hpp"
 #include "../../../ffi/EncodedTextAst.hpp"
 #include "../../SchemaTree.hpp"
 #include "../../Value.hpp"
@@ -23,6 +24,8 @@ using clp_s::search::ast::FilterOperation;
 using clp_s::search::ast::Literal;
 using clp_s::search::ast::literal_type_bitmask_t;
 using clp_s::search::ast::LiteralType;
+using clp_s::search::ast::to_epoch_nanoseconds;
+using clp_s::search::ast::try_get_timestamp_literal_nanoseconds;
 
 /**
  * Evaluates a numerical filter operation by applying the specified `FilterOperation` to two
@@ -189,11 +192,13 @@ auto evaluate_int_filter_op(
     if (false == operand->as_int(filter_operand, op)) {
         return false;
     }
-    return evaluate_numerical_filter_op(
-            op,
-            filter_operand,
-            value.get_immutable_view<value_int_t>()
-    );
+    auto value_operand{value.get_immutable_view<value_int_t>()};
+    epochtime_t timestamp_filter_operand{};
+    if (try_get_timestamp_literal_nanoseconds(operand, timestamp_filter_operand)) {
+        filter_operand = timestamp_filter_operand;
+        value_operand = to_epoch_nanoseconds(value_operand);
+    }
+    return evaluate_numerical_filter_op(op, filter_operand, value_operand);
 }
 
 auto evaluate_float_filter_op(
@@ -205,11 +210,16 @@ auto evaluate_float_filter_op(
     if (false == operand->as_float(filter_operand, op)) {
         return false;
     }
-    return evaluate_numerical_filter_op(
-            op,
-            filter_operand,
-            value.get_immutable_view<value_float_t>()
-    );
+    auto const value_operand{value.get_immutable_view<value_float_t>()};
+    epochtime_t timestamp_filter_operand{};
+    if (try_get_timestamp_literal_nanoseconds(operand, timestamp_filter_operand)) {
+        return evaluate_numerical_filter_op(
+                op,
+                static_cast<value_float_t>(timestamp_filter_operand),
+                to_epoch_nanoseconds(value_operand)
+        );
+    }
+    return evaluate_numerical_filter_op(op, filter_operand, value_operand);
 }
 
 auto evaluate_bool_filter_op(

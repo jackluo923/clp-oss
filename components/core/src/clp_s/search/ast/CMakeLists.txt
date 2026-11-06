@@ -13,6 +13,7 @@ set(
     ConvertToExists.hpp
     TimestampLiteral.cpp
     TimestampLiteral.hpp
+    TimestampComparison.hpp
     EmptyExpr.cpp
     EmptyExpr.hpp
     Expression.cpp

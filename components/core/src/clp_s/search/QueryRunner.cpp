@@ -20,6 +20,7 @@
 #include "ast/Literal.hpp"
 #include "ast/OrExpr.hpp"
 #include "ast/SearchUtils.hpp"
+#include "ast/TimestampComparison.hpp"
 #include "ColumnScan.hpp"
 #include "EvaluateTimestampIndex.hpp"
 
@@ -34,6 +35,8 @@ using clp_s::search::ast::literal_type_bitmask_t;
 using clp_s::search::ast::LiteralType;
 using clp_s::search::ast::OpList;
 using clp_s::search::ast::OrExpr;
+using clp_s::search::ast::to_epoch_nanoseconds;
+using clp_s::search::ast::try_get_timestamp_literal_nanoseconds;
 
 #define eval(op, a, b) (((op) == FilterOperation::EQ) ? ((a) == (b)) : ((a) != (b)))
 
@@ -389,8 +392,19 @@ bool QueryRunner::evaluate_int_filter(
         return false;
     }
 
+    epochtime_t timestamp_op_value{};
+    bool const is_timestamp_comparison{
+            try_get_timestamp_literal_nanoseconds(operand, timestamp_op_value)
+    };
+    if (is_timestamp_comparison) {
+        op_value = timestamp_op_value;
+    }
+
     for (BaseColumnReader* reader : m_basic_readers[column_id]) {
         int64_t value = std::get<int64_t>(reader->extract_value(m_cur_message));
+        if (is_timestamp_comparison) {
+            value = to_epoch_nanoseconds(value);
+        }
         if (evaluate_int_filter_core(op, value, op_value)) {
             return true;
         }
@@ -431,9 +445,23 @@ bool QueryRunner::evaluate_float_filter(
         return false;
     }
 
+    epochtime_t timestamp_op_value{};
+    bool const is_timestamp_comparison{
+            try_get_timestamp_literal_nanoseconds(operand, timestamp_op_value)
+    };
+
     for (BaseColumnReader* reader : m_basic_readers[column_id]) {
         double value = std::get<double>(reader->extract_value(m_cur_message));
-        if (evaluate_float_filter_core(op, value, op_value)) {
+        if (is_timestamp_comparison) {
+            if (evaluate_float_filter_core(
+                        op,
+                        to_epoch_nanoseconds(value),
+                        static_cast<double>(timestamp_op_value)
+                ))
+            {
+                return true;
+            }
+        } else if (evaluate_float_filter_core(op, value, op_value)) {
             return true;
         }
     }

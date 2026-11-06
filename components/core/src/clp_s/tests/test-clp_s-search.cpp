@@ -1,6 +1,8 @@
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -27,6 +29,7 @@
 #include "../src/clp_s/search/ast/NarrowTypes.hpp"
 #include "../src/clp_s/search/ast/OrExpr.hpp"
 #include "../src/clp_s/search/ast/OrOfAndForm.hpp"
+#include "../src/clp_s/search/ast/TimestampComparison.hpp"
 #include "../src/clp_s/search/ast/ValueLiteral.hpp"
 #include "../src/clp_s/search/EvaluateRangeIndexFilters.hpp"
 #include "../src/clp_s/search/EvaluateTimestampIndex.hpp"
@@ -38,12 +41,15 @@
 #include "clp_s_test_utils.hpp"
 #include "TestOutputCleaner.hpp"
 
+using clp_s::epochtime_t;
+
 constexpr std::string_view cTestSearchArchiveDirectory{"test-clp-s-search-archive"};
 constexpr std::string_view cTestInputFileDirectory{"test_log_files"};
 constexpr std::string_view cTestSearchInputFile{"test_search.jsonl"};
 constexpr std::string_view cTestSearchFormattedFloatFile{"test_search_formatted_float.jsonl"};
 constexpr std::string_view cTestSearchFloatTimestampFile{"test_search_float_timestamp.jsonl"};
 constexpr std::string_view cTestSearchIntTimestampFile{"test_search_int_timestamp.jsonl"};
+constexpr std::string_view cTestSearchMixedTimestampFile{"test_search_mixed_timestamp.jsonl"};
 constexpr std::string_view cTestIdxKey{"idx"};
 constexpr std::string_view cTestTimestampKey{"timestamp"};
 
@@ -301,7 +307,8 @@ TEST_CASE("clp-s-search-float-timestamp", "[clp-s][search]") {
             {R"aa(timestamp > timestamp("1759417024"))aa", {0, 1, 2}},
             {R"aa(timestamp > timestamp("1759417024.1") AND )aa"
              R"aa(timestamp < timestamp("1759417024.3"))aa",
-             {1}}
+             {1}},
+            {R"aa(timestamp: timestamp("1759417024200"))aa", {1}}
     };
     auto single_file_archive = GENERATE(true, false);
     auto retain_float_format = GENERATE(true, false);
@@ -353,5 +360,88 @@ TEST_CASE("clp-s-search-epoch-timestamp", "[clp-s][search]") {
     for (auto const& [query, expected_results] : queries_and_results) {
         CAPTURE(query);
         REQUIRE_NOTHROW(search(query, false, expected_results));
+    }
+}
+
+TEST_CASE("clp-s-search-mixed-timestamp", "[clp-s][search]") {
+    // The fixture holds the same instant as an ISO 8601 string, as float seconds, milliseconds and
+    // nanoseconds, and as integer milliseconds, microseconds and nanoseconds. Compressing it
+    // without a timestamp key keeps each value in the physical type it was written with, so the
+    // leaves disagree on precision the way a field written by several services does.
+    std::vector<std::pair<std::string, std::vector<int64_t>>> queries_and_results{
+            {R"aa(timestamp: timestamp("1746003005125"))aa", {1, 2, 3, 4, 5, 6}},
+            {R"aa(*: timestamp("1746003005125"))aa", {1, 2, 3, 4, 5, 6}},
+            {R"aa(timestamp > timestamp("1746003005124"))aa", {1, 2, 3, 4, 5, 6}},
+            {R"aa(timestamp < timestamp("1746003005126"))aa", {1, 2, 3, 4, 5, 6}},
+            // Bounds a second away: only a leaf interpreted in the wrong unit falls outside them.
+            {R"aa(timestamp > timestamp("1746003004"))aa", {1, 2, 3, 4, 5, 6}},
+            {R"aa(timestamp < timestamp("1746003006"))aa", {1, 2, 3, 4, 5, 6}},
+            {R"aa(timestamp > timestamp("1746003005125"))aa", {}},
+    };
+    auto single_file_archive = GENERATE(true, false);
+
+    TestOutputCleaner const test_cleanup{{std::string{cTestSearchArchiveDirectory}}};
+
+    REQUIRE_NOTHROW(
+            std::ignore = compress_archive(
+                    get_test_input_local_path(cTestSearchMixedTimestampFile),
+                    std::string{cTestSearchArchiveDirectory},
+                    std::nullopt,
+                    true,
+                    single_file_archive,
+                    false
+            )
+    );
+
+    for (auto const& [query, expected_results] : queries_and_results) {
+        CAPTURE(query);
+        REQUIRE_NOTHROW(search(query, false, expected_results));
+    }
+}
+
+TEST_CASE("clp-s-search-timestamp-comparison", "[clp-s][search]") {
+    constexpr epochtime_t cEpochSeconds{1'746'003'005};
+    constexpr epochtime_t cEpochNanoseconds{1'746'003'005'000'000'000};
+
+    SECTION("integer leaves scale by their magnitude") {
+        REQUIRE(cEpochNanoseconds == clp_s::search::ast::to_epoch_nanoseconds(cEpochSeconds));
+        REQUIRE(cEpochNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(cEpochSeconds * 1000));
+        REQUIRE(cEpochNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(cEpochSeconds * 1'000'000));
+        REQUIRE(cEpochNanoseconds == clp_s::search::ast::to_epoch_nanoseconds(cEpochNanoseconds));
+    }
+
+    SECTION("float leaves scale by their magnitude") {
+        constexpr auto cFractionalNanoseconds{1'746'003'005'125'000'000.0};
+        REQUIRE(cFractionalNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(1'746'003'005.125));
+        REQUIRE(cFractionalNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(1'746'003'005'125.0));
+        REQUIRE(cFractionalNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(1'746'003'005'125'000.0));
+        REQUIRE(cFractionalNanoseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(1'746'003'005'125'000'000.0));
+
+        // A value that is not a finite number keeps the nanosecond scale instead of being forced
+        // into the integer range, so ordered comparisons against it stay false.
+        REQUIRE(std::isnan(
+                clp_s::search::ast::to_epoch_nanoseconds(std::numeric_limits<double>::quiet_NaN())
+        ));
+        REQUIRE(std::isinf(
+                clp_s::search::ast::to_epoch_nanoseconds(std::numeric_limits<double>::infinity())
+        ));
+    }
+
+    SECTION("integer values that cannot be scaled are returned unchanged") {
+        constexpr auto cMin{std::numeric_limits<epochtime_t>::min()};
+        constexpr auto cMax{std::numeric_limits<epochtime_t>::max()};
+
+        // Scaling by the microsecond factor would overflow, so the value is returned unchanged.
+        constexpr epochtime_t cTooLargeForMicroseconds{10'000'000'000'000'000};
+        REQUIRE(cTooLargeForMicroseconds
+                == clp_s::search::ast::to_epoch_nanoseconds(cTooLargeForMicroseconds));
+        REQUIRE(cMin == clp_s::search::ast::to_epoch_nanoseconds(cMin));
+        REQUIRE(cMax == clp_s::search::ast::to_epoch_nanoseconds(cMax));
     }
 }
